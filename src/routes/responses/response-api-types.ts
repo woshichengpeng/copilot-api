@@ -295,7 +295,13 @@ export interface ResponseAPIStreamState {
   accumulatedText: string
   accumulatedToolCalls: Map<
     number,
-    { id: string; name: string; args: string; outputIndex: number }
+    {
+      id: string
+      callId: string
+      name: string
+      args: string
+      outputIndex: number
+    }
   >
   outputItems: Array<OutputItem>
   usage: ResponseUsage

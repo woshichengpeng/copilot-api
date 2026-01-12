@@ -186,6 +186,7 @@ function startToolCall(
 
   state.accumulatedToolCalls.set(toolCall.index, {
     id: toolItem.id,
+    callId: toolCall.id ?? "",
     name: toolItem.name,
     args: "",
     outputIndex: toolOutputIndex,
@@ -259,7 +260,7 @@ function completeToolCalls(
     const completedToolCall: FunctionCallOutput = {
       id: toolInfo.id,
       type: "function_call",
-      call_id: toolInfo.id,
+      call_id: toolInfo.callId,
       name: toolInfo.name,
       arguments: toolInfo.args,
       status: "completed",

@@ -3,6 +3,7 @@ import type {
   ContentPart,
   Message,
   Tool,
+  ToolCall,
 } from "~/services/copilot/create-chat-completions"
 
 import type {
@@ -50,10 +51,47 @@ function translateInputToMessages(
     return messages
   }
 
-  for (const item of input) {
-    const message = translateInputItem(item)
-    if (message) {
-      messages.push(message)
+  // Group consecutive function_call items into a single assistant message
+  let i = 0
+  while (i < input.length) {
+    const item = input[i]
+
+    // Check if this is a function_call that needs grouping
+    if ("type" in item && item.type === "function_call") {
+      const toolCalls: Array<ToolCall> = []
+
+      // Collect all consecutive function_call items
+      while (i < input.length) {
+        const current = input[i]
+        if ("type" in current && current.type === "function_call") {
+          const funcCall = current
+          toolCalls.push({
+            id: funcCall.call_id,
+            type: "function",
+            function: {
+              name: funcCall.name,
+              arguments: funcCall.arguments,
+            },
+          })
+          i++
+        } else {
+          break
+        }
+      }
+
+      // Create single assistant message with all tool calls
+      messages.push({
+        role: "assistant",
+        content: null,
+        tool_calls: toolCalls,
+      })
+    } else {
+      // Handle other item types normally
+      const message = translateInputItem(item)
+      if (message) {
+        messages.push(message)
+      }
+      i++
     }
   }
 
