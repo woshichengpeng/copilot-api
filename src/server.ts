@@ -4,6 +4,7 @@ import { logger } from "hono/logger"
 
 import { completionRoutes } from "./routes/chat-completions/route"
 import { embeddingRoutes } from "./routes/embeddings/route"
+import { geminiRoutes } from "./routes/gemini/route"
 import { messageRoutes } from "./routes/messages/route"
 import { modelRoutes } from "./routes/models/route"
 import { responseRoutes } from "./routes/responses/route"
@@ -34,3 +35,6 @@ server.route("/v1/messages", messageRoutes)
 // OpenAI Response API compatible endpoints
 server.route("/responses", responseRoutes)
 server.route("/v1/responses", responseRoutes)
+
+// Gemini compatible endpoints
+server.route("/v1beta", geminiRoutes)
