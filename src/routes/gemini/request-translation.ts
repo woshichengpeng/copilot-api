@@ -60,11 +60,22 @@ function translateContentsToMessages(
 
   // Process each content entry
   for (const content of contents) {
+    // Skip content with no parts
+    if (content.parts.length === 0) {
+      continue
+    }
     messages.push(...translateContentToMessages(content))
   }
 
   // Merge consecutive messages with the same role (OpenAI API requirement)
-  return mergeConsecutiveMessages(messages)
+  const merged = mergeConsecutiveMessages(messages)
+
+  // Ensure we have at least one user message (OpenAI API requirement)
+  if (merged.length === 0 || !merged.some((m) => m.role === "user")) {
+    merged.push({ role: "user", content: "" })
+  }
+
+  return merged
 }
 
 /**
@@ -224,6 +235,38 @@ function extractTextFromParts(
   return textParts.map((p) => p.text).join("")
 }
 
+/**
+ * Recursively normalize JSON Schema types from uppercase (Gemini format)
+ * to lowercase (OpenAI format).
+ * e.g., "STRING" -> "string", "OBJECT" -> "object", "ARRAY" -> "array"
+ */
+function normalizeSchemaTypes(
+  schema: Record<string, unknown>,
+): Record<string, unknown> {
+  const result: Record<string, unknown> = {}
+
+  for (const [key, value] of Object.entries(schema)) {
+    if (key === "type" && typeof value === "string") {
+      // Convert uppercase type to lowercase
+      result[key] = value.toLowerCase()
+    } else if (Array.isArray(value)) {
+      // Recursively process arrays
+      result[key] = (value as Array<unknown>).map((item: unknown) =>
+        typeof item === "object" && item !== null ?
+          normalizeSchemaTypes(item as Record<string, unknown>)
+        : item,
+      )
+    } else if (typeof value === "object" && value !== null) {
+      // Recursively process nested objects
+      result[key] = normalizeSchemaTypes(value as Record<string, unknown>)
+    } else {
+      result[key] = value
+    }
+  }
+
+  return result
+}
+
 function translateGeminiToolsToOpenAI(
   tools?: Array<GeminiTool>,
 ): Array<Tool> | undefined {
@@ -236,13 +279,19 @@ function translateGeminiToolsToOpenAI(
   for (const tool of tools) {
     if (tool.functionDeclarations) {
       for (const funcDecl of tool.functionDeclarations) {
+        // Skip function declarations without a name
+        if (!funcDecl.name) {
+          continue
+        }
+        const rawParameters =
+          funcDecl.parameters ?? funcDecl.parametersJsonSchema ?? {}
         openAITools.push({
           type: "function",
           function: {
             name: funcDecl.name,
-            description: funcDecl.description,
-            parameters:
-              funcDecl.parameters ?? funcDecl.parametersJsonSchema ?? {},
+            description: funcDecl.description ?? "",
+            // Normalize schema types from uppercase to lowercase
+            parameters: normalizeSchemaTypes(rawParameters),
           },
         })
       }
