@@ -4,6 +4,7 @@ import { Hono } from "hono"
 
 import { HTTPError } from "~/lib/error"
 
+import { handleCountTokens } from "./count-tokens-handler"
 import { handleGenerateContent, handleStreamGenerateContent } from "./handler"
 
 export const geminiRoutes = new Hono()
@@ -58,6 +59,18 @@ geminiRoutes.post(
   async (c) => {
     try {
       return await handleStreamGenerateContent(c)
+    } catch (error) {
+      return forwardGeminiError(c, error)
+    }
+  },
+)
+
+// Token counting: POST /v1beta/models/{model}:countTokens
+geminiRoutes.post(
+  String.raw`/models/:modelWithMethod{.+\:countTokens}`,
+  async (c) => {
+    try {
+      return await handleCountTokens(c)
     } catch (error) {
       return forwardGeminiError(c, error)
     }

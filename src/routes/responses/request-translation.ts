@@ -29,6 +29,7 @@ export function translateToOpenAI(
     tools: translateTools(payload.tools),
     tool_choice: translateToolChoice(payload.tool_choice),
     user: payload.user,
+    parallel_tool_calls: payload.parallel_tool_calls,
   }
 }
 

@@ -29,6 +29,7 @@ export function createStreamState(
     currentContentIndex: 0,
     messageItemId: null,
     accumulatedText: "",
+    totalAccumulatedText: "",
     accumulatedToolCalls: new Map(),
     outputItems: [],
     usage: {
@@ -95,6 +96,7 @@ function handleTextDelta(
   })
 
   state.accumulatedText += content
+  state.totalAccumulatedText += content
   return events
 }
 
@@ -224,7 +226,7 @@ function handleFinish(
 ): Array<ResponseStreamEvent> {
   const events: Array<ResponseStreamEvent> = []
 
-  if (state.messageStarted && state.accumulatedText) {
+  if (state.messageStarted) {
     events.push(...closeTextMessage(state))
   }
 
@@ -322,6 +324,7 @@ function closeTextMessage(
   state.outputItems.push(completedMessage)
   state.currentOutputIndex++
   state.messageStarted = false
+  state.accumulatedText = ""
 
   return events
 }
@@ -375,7 +378,7 @@ function buildResponseObject(
     created_at: state.createdAt,
     model: state.model,
     output: state.outputItems,
-    output_text: state.accumulatedText || null,
+    output_text: state.totalAccumulatedText || null,
     error: null,
     incomplete_details: incompleteDetails,
     usage: state.usage,

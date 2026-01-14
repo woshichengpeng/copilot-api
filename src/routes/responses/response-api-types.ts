@@ -293,6 +293,7 @@ export interface ResponseAPIStreamState {
   currentContentIndex: number
   messageItemId: string | null
   accumulatedText: string
+  totalAccumulatedText: string
   accumulatedToolCalls: Map<
     number,
     {

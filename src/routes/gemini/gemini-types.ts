@@ -136,6 +136,10 @@ export interface GeminiUsageMetadata {
   thoughtsTokenCount?: number
 }
 
+export interface GeminiCountTokensResponse {
+  totalTokens: number
+}
+
 // =====================================================
 // Stream State for Translation
 // =====================================================

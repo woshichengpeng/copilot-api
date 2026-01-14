@@ -157,6 +157,7 @@ export interface ChatCompletionsPayload {
     | { type: "function"; function: { name: string } }
     | null
   user?: string | null
+  parallel_tool_calls?: boolean | null
 }
 
 export interface Tool {
