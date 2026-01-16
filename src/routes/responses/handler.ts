@@ -11,9 +11,12 @@ import {
   type ChatCompletionChunk,
   type ChatCompletionResponse,
 } from "~/services/copilot/create-chat-completions"
+import { createResponses } from "~/services/copilot/create-responses"
+import { getModelById, useResponsesApi } from "~/services/copilot/get-models"
 
 import type {
   ResponseAPIPayload,
+  ResponseAPIResponse,
   ResponseAPIStreamState,
 } from "./response-api-types"
 
@@ -25,21 +28,41 @@ import {
   translateChunkToEvents,
 } from "./stream-translation"
 
+/**
+ * Check if model should use native Response API
+ * Logic matches vscode-copilot-chat chatEndpoint.ts:222-231
+ */
+function shouldUseResponsesApi(modelId: string): boolean {
+  const model = getModelById(modelId)
+  if (model) {
+    return useResponsesApi(model)
+  }
+  // No model info available - don't use native API
+  return false
+}
+
 export async function handleResponses(c: Context) {
   await checkRateLimit(state)
 
   const payload = await c.req.json<ResponseAPIPayload>()
   consola.debug("Response API request payload:", JSON.stringify(payload))
 
+  if (state.manualApprove) {
+    await awaitApproval()
+  }
+
+  // Use native Response API if model supports it (per supported_endpoints)
+  if (shouldUseResponsesApi(payload.model)) {
+    consola.debug("Using native Response API for model:", payload.model)
+    return handleNativeResponsesApi(c, payload)
+  }
+
+  // For other models, translate to Chat Completions API
   const openAIPayload = translateToOpenAI(payload)
   consola.debug(
     "Translated OpenAI request payload:",
     JSON.stringify(openAIPayload),
   )
-
-  if (state.manualApprove) {
-    await awaitApproval()
-  }
 
   const response = await createChatCompletions(openAIPayload)
 
@@ -126,3 +149,55 @@ export async function handleResponses(c: Context) {
 const isNonStreaming = (
   response: Awaited<ReturnType<typeof createChatCompletions>>,
 ): response is ChatCompletionResponse => Object.hasOwn(response, "choices")
+
+const isNonStreamingResponseApi = (
+  response: Awaited<ReturnType<typeof createResponses>>,
+): response is ResponseAPIResponse => Object.hasOwn(response, "output")
+
+/**
+ * Handle native Response API passthrough for codex models
+ * Directly forwards request to Copilot /responses endpoint
+ */
+async function handleNativeResponsesApi(
+  c: Context,
+  payload: ResponseAPIPayload,
+) {
+  const response = await createResponses(payload)
+
+  // Non-streaming response - return directly
+  if (isNonStreamingResponseApi(response)) {
+    consola.debug(
+      "Non-streaming native response from Copilot:",
+      JSON.stringify(response).slice(-400),
+    )
+    return c.json(response)
+  }
+
+  // Streaming response - passthrough SSE events
+  consola.debug("Streaming native response from Copilot")
+
+  return streamSSE(c, async (stream) => {
+    for await (const rawEvent of response) {
+      consola.debug("Copilot native stream event:", JSON.stringify(rawEvent))
+
+      if (rawEvent.data === "[DONE]") {
+        break
+      }
+
+      if (!rawEvent.data) {
+        continue
+      }
+
+      // Parse and forward the event directly
+      try {
+        const event = JSON.parse(rawEvent.data) as { type: string }
+        await stream.writeSSE({
+          event: event.type,
+          data: rawEvent.data,
+        })
+      } catch {
+        consola.warn("Failed to parse stream event, skipping:", rawEvent.data)
+      }
+    }
+  })
+}
