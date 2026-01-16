@@ -173,31 +173,114 @@ async function handleNativeResponsesApi(
     return c.json(response)
   }
 
-  // Streaming response - passthrough SSE events
+  // Streaming response - passthrough SSE events with keep-alive
   consola.debug("Streaming native response from Copilot")
 
-  return streamSSE(c, async (stream) => {
-    for await (const rawEvent of response) {
-      consola.debug("Copilot native stream event:", JSON.stringify(rawEvent))
+  return streamSSE(
+    c,
+    async (stream) => {
+      let hasCompleted = false
 
-      if (rawEvent.data === "[DONE]") {
-        break
+      // Keep-alive using recursive setTimeout to avoid overlapping writes
+      const KEEPALIVE_INTERVAL_MS = 5000
+      let keepAliveTimer: ReturnType<typeof setTimeout> | null = null
+      let keepAliveActive = true
+
+      const scheduleKeepAlive = () => {
+        if (!keepAliveActive) return
+        keepAliveTimer = setTimeout(() => {
+          if (!keepAliveActive) return
+          // SSE comment line - ignored by clients but keeps connection alive
+          stream
+            .write(": keepalive\n\n")
+            .then(() => {
+              // Schedule next keepalive only after current write completes
+              scheduleKeepAlive()
+            })
+            .catch(() => {
+              // Stream closed, stop keepalive
+              stopKeepAlive()
+            })
+        }, KEEPALIVE_INTERVAL_MS)
       }
 
-      if (!rawEvent.data) {
-        continue
+      const stopKeepAlive = () => {
+        keepAliveActive = false
+        if (keepAliveTimer) {
+          clearTimeout(keepAliveTimer)
+          keepAliveTimer = null
+        }
       }
 
-      // Parse and forward the event directly
+      // Stop keepalive on client disconnect
+      stream.onAbort(() => {
+        stopKeepAlive()
+      })
+
       try {
-        const event = JSON.parse(rawEvent.data) as { type: string }
-        await stream.writeSSE({
-          event: event.type,
-          data: rawEvent.data,
-        })
-      } catch {
-        consola.warn("Failed to parse stream event, skipping:", rawEvent.data)
+        scheduleKeepAlive()
+
+        for await (const rawEvent of response) {
+          consola.debug(
+            "Copilot native stream event:",
+            JSON.stringify(rawEvent),
+          )
+
+          if (rawEvent.data === "[DONE]") {
+            break
+          }
+
+          if (!rawEvent.data) {
+            continue
+          }
+
+          // Parse and forward the event directly
+          try {
+            const event = JSON.parse(rawEvent.data) as {
+              type: string
+            }
+
+            // Track completion status
+            if (
+              event.type === "response.completed"
+              || event.type === "response.done"
+            ) {
+              hasCompleted = true
+            }
+
+            await stream.writeSSE({
+              event: event.type,
+              data: rawEvent.data,
+            })
+          } catch {
+            consola.warn(
+              "Failed to parse stream event, skipping:",
+              rawEvent.data,
+            )
+          }
+        }
+      } catch (error) {
+        // Log upstream connection error - use info level for visibility
+        consola.box("🔴 UPSTREAM STREAM ERROR")
+        consola.info("Upstream stream error:", error)
+
+        // If we haven't received completion, the client will see an abrupt disconnect
+        if (!hasCompleted) {
+          consola.info(
+            "⚠️ Stream interrupted before response.completed - client may retry",
+          )
+        }
+
+        // Re-throw to let Hono's error handler deal with it
+        throw error
+      } finally {
+        stopKeepAlive()
       }
-    }
-  })
+    },
+    // Error handler - log but don't send error event (let client retry)
+    async (error, _stream) => {
+      consola.info("🔴 SSE stream error handler:", error.message)
+      await Promise.resolve()
+    },
+  )
 }
