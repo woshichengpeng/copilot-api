@@ -27,6 +27,7 @@ import {
   translateToOpenAI,
 } from "./non-stream-translation"
 import { translateChunkToAnthropicEvents } from "./stream-translation"
+import { normalizeAnthropicThinking, sanitizeAnthropicSystem } from "./utils"
 
 /**
  * Check if model should use native Messages API
@@ -45,23 +46,27 @@ export async function handleCompletion(c: Context) {
   await checkRateLimit(state)
 
   const anthropicPayload = await c.req.json<AnthropicMessagesPayload>()
-  consola.debug("Anthropic request payload:", JSON.stringify(anthropicPayload))
+  const sanitizedPayload = normalizeAnthropicThinking({
+    ...anthropicPayload,
+    system: sanitizeAnthropicSystem(anthropicPayload.system),
+  })
+  consola.debug("Anthropic request payload:", JSON.stringify(sanitizedPayload))
 
   if (state.manualApprove) {
     await awaitApproval()
   }
 
   // Use native Messages API if model supports it (per supported_endpoints)
-  if (shouldUseMessagesApi(anthropicPayload.model)) {
+  if (shouldUseMessagesApi(sanitizedPayload.model)) {
     consola.debug(
       "Using native Messages API for model:",
-      anthropicPayload.model,
+      sanitizedPayload.model,
     )
-    return handleNativeMessagesApi(c, anthropicPayload)
+    return handleNativeMessagesApi(c, sanitizedPayload)
   }
 
   // For other models, translate to Chat Completions API
-  const openAIPayload = translateToOpenAI(anthropicPayload)
+  const openAIPayload = translateToOpenAI(sanitizedPayload)
   consola.debug(
     "Translated OpenAI request payload:",
     JSON.stringify(openAIPayload),

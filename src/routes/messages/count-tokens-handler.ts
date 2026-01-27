@@ -7,6 +7,7 @@ import { getTokenCount } from "~/lib/tokenizer"
 
 import { type AnthropicMessagesPayload } from "./anthropic-types"
 import { translateToOpenAI } from "./non-stream-translation"
+import { sanitizeAnthropicSystem } from "./utils"
 
 /**
  * Handles token counting for Anthropic messages
@@ -16,11 +17,15 @@ export async function handleCountTokens(c: Context) {
     const anthropicBeta = c.req.header("anthropic-beta")
 
     const anthropicPayload = await c.req.json<AnthropicMessagesPayload>()
+    const sanitizedPayload = {
+      ...anthropicPayload,
+      system: sanitizeAnthropicSystem(anthropicPayload.system),
+    }
 
-    const openAIPayload = translateToOpenAI(anthropicPayload)
+    const openAIPayload = translateToOpenAI(sanitizedPayload)
 
     const selectedModel = state.models?.data.find(
-      (model) => model.id === anthropicPayload.model,
+      (model) => model.id === sanitizedPayload.model,
     )
 
     if (!selectedModel) {
@@ -32,27 +37,27 @@ export async function handleCountTokens(c: Context) {
 
     const tokenCount = await getTokenCount(openAIPayload, selectedModel)
 
-    if (anthropicPayload.tools && anthropicPayload.tools.length > 0) {
+    if (sanitizedPayload.tools && sanitizedPayload.tools.length > 0) {
       let mcpToolExist = false
       if (anthropicBeta?.startsWith("claude-code")) {
-        mcpToolExist = anthropicPayload.tools.some((tool) =>
+        mcpToolExist = sanitizedPayload.tools.some((tool) =>
           tool.name.startsWith("mcp__"),
         )
       }
       if (!mcpToolExist) {
-        if (anthropicPayload.model.startsWith("claude")) {
+        if (sanitizedPayload.model.startsWith("claude")) {
           // https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/overview#pricing
           tokenCount.input = tokenCount.input + 346
-        } else if (anthropicPayload.model.startsWith("grok")) {
+        } else if (sanitizedPayload.model.startsWith("grok")) {
           tokenCount.input = tokenCount.input + 480
         }
       }
     }
 
     let finalTokenCount = tokenCount.input + tokenCount.output
-    if (anthropicPayload.model.startsWith("claude")) {
+    if (sanitizedPayload.model.startsWith("claude")) {
       finalTokenCount = Math.round(finalTokenCount * 1.15)
-    } else if (anthropicPayload.model.startsWith("grok")) {
+    } else if (sanitizedPayload.model.startsWith("grok")) {
       finalTokenCount = Math.round(finalTokenCount * 1.03)
     }
 

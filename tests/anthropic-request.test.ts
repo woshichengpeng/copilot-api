@@ -4,6 +4,10 @@ import { z } from "zod"
 import type { AnthropicMessagesPayload } from "~/routes/messages/anthropic-types"
 
 import { translateToOpenAI } from "../src/routes/messages/non-stream-translation"
+import {
+  normalizeAnthropicThinking,
+  sanitizeAnthropicSystem,
+} from "../src/routes/messages/utils"
 
 // Zod schema for a single message in the chat completion request.
 const messageSchema = z.object({
@@ -196,6 +200,42 @@ describe("Anthropic to OpenAI translation logic", () => {
     )
     expect(assistantMessage?.tool_calls).toHaveLength(1)
     expect(assistantMessage?.tool_calls?.[0].function.name).toBe("get_weather")
+  })
+
+  test("should strip reserved billing header from system prompt", () => {
+    const system =
+      "You are a helpful assistant.\n"
+      + "x-anthropic-billing-header: test\n"
+      + "Follow the user's instructions."
+    const sanitized = sanitizeAnthropicSystem(system)
+    expect(sanitized).toBe(
+      "You are a helpful assistant.\nFollow the user's instructions.",
+    )
+    expect(
+      sanitizeAnthropicSystem(
+        "Keep responses short.\n"
+          + "Do not mention x-anthropic-billing-header in replies.\n"
+          + "Only answer in English.",
+      ),
+    ).toBe("Keep responses short.\nOnly answer in English.")
+    expect(
+      sanitizeAnthropicSystem("x-anthropic-billing-header: test"),
+    ).toBeUndefined()
+  })
+
+  test("should clamp thinking budget under max_tokens", () => {
+    const anthropicPayload: AnthropicMessagesPayload = {
+      model: "claude-3-5-sonnet-20241022",
+      messages: [{ role: "user", content: "Hello!" }],
+      max_tokens: 64,
+      thinking: {
+        type: "enabled",
+        budget_tokens: 128,
+      },
+    }
+
+    const normalized = normalizeAnthropicThinking(anthropicPayload)
+    expect(normalized.thinking?.budget_tokens).toBe(63)
   })
 })
 
