@@ -6,14 +6,38 @@ import {
 } from "./anthropic-types"
 import { mapOpenAIStopReasonToAnthropic } from "./utils"
 
-function isToolBlockOpen(state: AnthropicStreamState): boolean {
-  if (!state.contentBlockOpen) {
-    return false
+/**
+ * Close the current content block, handling signature_delta for thinking blocks
+ */
+function closeCurrentBlock(
+  state: AnthropicStreamState,
+  events: Array<AnthropicStreamEventData>,
+): void {
+  if (!state.contentBlockOpen) return
+
+  // If this is a thinking block with accumulated signature, emit signature_delta first
+  if (
+    state.contentBlockType === "thinking"
+    && state.accumulatedReasoningOpaque
+  ) {
+    events.push({
+      type: "content_block_delta",
+      index: state.contentBlockIndex,
+      delta: {
+        type: "signature_delta",
+        signature: state.accumulatedReasoningOpaque,
+      },
+    })
+    state.accumulatedReasoningOpaque = undefined
   }
-  // Check if the current block index corresponds to any known tool call
-  return Object.values(state.toolCalls).some(
-    (tc) => tc.anthropicBlockIndex === state.contentBlockIndex,
-  )
+
+  events.push({
+    type: "content_block_stop",
+    index: state.contentBlockIndex,
+  })
+  state.contentBlockIndex++
+  state.contentBlockOpen = false
+  state.contentBlockType = null
 }
 
 // eslint-disable-next-line max-lines-per-function, complexity
@@ -57,15 +81,52 @@ export function translateChunkToAnthropicEvents(
     state.messageStartSent = true
   }
 
-  if (delta.content) {
-    if (isToolBlockOpen(state)) {
-      // A tool block was open, so close it before starting a text block.
+  // 1. Handle reasoning (thinking) - must come first
+  if (delta.reasoning_text || delta.reasoning_opaque) {
+    // If current block is not thinking, close it and open a thinking block
+    if (state.contentBlockType !== "thinking") {
+      closeCurrentBlock(state, events)
       events.push({
-        type: "content_block_stop",
+        type: "content_block_start",
         index: state.contentBlockIndex,
+        content_block: {
+          type: "thinking",
+          thinking: "",
+        },
       })
-      state.contentBlockIndex++
-      state.contentBlockOpen = false
+      state.contentBlockOpen = true
+      state.contentBlockType = "thinking"
+    }
+
+    if (delta.reasoning_text) {
+      events.push({
+        type: "content_block_delta",
+        index: state.contentBlockIndex,
+        delta: {
+          type: "thinking_delta",
+          thinking: delta.reasoning_text,
+        },
+      })
+    }
+
+    // Accumulate reasoning_opaque - append if incremental, or replace if full value
+    // (Copilot typically sends full value each time, but handle incremental for safety)
+    if (delta.reasoning_opaque) {
+      state.accumulatedReasoningOpaque =
+        (state.accumulatedReasoningOpaque ?? "") + delta.reasoning_opaque
+    }
+  }
+
+  // 2. Handle content (text) - comes after thinking
+  if (delta.content) {
+    // If current block is thinking, close it first
+    if (state.contentBlockType === "thinking") {
+      closeCurrentBlock(state, events)
+    }
+
+    // If current block is a tool, close it first
+    if (state.contentBlockType === "tool") {
+      closeCurrentBlock(state, events)
     }
 
     if (!state.contentBlockOpen) {
@@ -78,6 +139,7 @@ export function translateChunkToAnthropicEvents(
         },
       })
       state.contentBlockOpen = true
+      state.contentBlockType = "text"
     }
 
     events.push({
@@ -90,18 +152,13 @@ export function translateChunkToAnthropicEvents(
     })
   }
 
+  // 3. Handle tool_calls - comes last
   if (delta.tool_calls) {
     for (const toolCall of delta.tool_calls) {
       if (toolCall.id && toolCall.function?.name) {
-        // New tool call starting.
+        // New tool call starting - close any open block first
         if (state.contentBlockOpen) {
-          // Close any previously open block.
-          events.push({
-            type: "content_block_stop",
-            index: state.contentBlockIndex,
-          })
-          state.contentBlockIndex++
-          state.contentBlockOpen = false
+          closeCurrentBlock(state, events)
         }
 
         const anthropicBlockIndex = state.contentBlockIndex
@@ -122,6 +179,7 @@ export function translateChunkToAnthropicEvents(
           },
         })
         state.contentBlockOpen = true
+        state.contentBlockType = "tool"
       }
 
       if (toolCall.function?.arguments) {
@@ -144,11 +202,7 @@ export function translateChunkToAnthropicEvents(
 
   if (choice.finish_reason) {
     if (state.contentBlockOpen) {
-      events.push({
-        type: "content_block_stop",
-        index: state.contentBlockIndex,
-      })
-      state.contentBlockOpen = false
+      closeCurrentBlock(state, events)
     }
 
     events.push(

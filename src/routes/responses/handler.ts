@@ -45,6 +45,9 @@ export async function handleResponses(c: Context) {
   await checkRateLimit(state)
 
   const payload = await c.req.json<ResponseAPIPayload>()
+  const thinkingEnabled = payload.reasoning !== undefined
+  c.set("model", payload.model)
+  c.set("thinking", thinkingEnabled ? "enabled" : "disabled")
   consola.debug("Response API request payload:", JSON.stringify(payload))
 
   if (state.manualApprove) {

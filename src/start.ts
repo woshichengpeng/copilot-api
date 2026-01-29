@@ -25,6 +25,7 @@ interface RunServerOptions {
   claudeCode: boolean
   showToken: boolean
   proxyEnv: boolean
+  dumpErrors: boolean
 }
 
 export async function runServer(options: RunServerOptions): Promise<void> {
@@ -46,6 +47,7 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   state.rateLimitSeconds = options.rateLimit
   state.rateLimitWait = options.rateLimitWait
   state.showToken = options.showToken
+  state.dumpErrors = options.dumpErrors
 
   await ensurePaths()
   await cacheVSCodeVersion()
@@ -61,7 +63,12 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   await cacheModels()
 
   consola.info(
-    `Available models: \n${state.models?.data.map((model) => `- ${model.id}`).join("\n")}`,
+    `Available models: \n${state.models?.data
+      .map((model) => {
+        const endpoints = model.supported_endpoints?.join(", ") || "default"
+        return `- ${model.id} [${endpoints}]`
+      })
+      .join("\n")}`,
   )
 
   const serverUrl = `http://localhost:${options.port}`
@@ -184,6 +191,11 @@ export const start = defineCommand({
       default: false,
       description: "Initialize proxy from environment variables",
     },
+    "dump-errors": {
+      type: "boolean",
+      default: false,
+      description: "Dump error requests to JSON files for debugging",
+    },
   },
   run({ args }) {
     const rateLimitRaw = args["rate-limit"]
@@ -202,6 +214,7 @@ export const start = defineCommand({
       claudeCode: args["claude-code"],
       showToken: args["show-token"],
       proxyEnv: args["proxy-env"],
+      dumpErrors: args["dump-errors"],
     })
   },
 })

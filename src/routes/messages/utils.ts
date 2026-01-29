@@ -45,28 +45,40 @@ export function sanitizeAnthropicSystem(
 export function normalizeAnthropicThinking(
   payload: AnthropicMessagesPayload,
 ): AnthropicMessagesPayload {
-  if (!payload.thinking) {
+  if (!payload.thinking || payload.thinking.type !== "enabled") {
     return payload
   }
 
   const budgetTokens = payload.thinking.budget_tokens
-  if (budgetTokens === undefined) {
-    return payload
-  }
+  const minBudget = 1024
 
   if (payload.max_tokens <= budgetTokens) {
-    if (payload.max_tokens <= 0) {
+    // If max_tokens can't accommodate minimum budget (1024), disable thinking
+    if (payload.max_tokens <= minBudget) {
       return {
         ...payload,
         thinking: undefined,
       }
     }
 
+    // Clamp budget_tokens to max_tokens - 1, but ensure >= 1024
+    const clampedBudget = Math.max(minBudget, payload.max_tokens - 1)
     return {
       ...payload,
       thinking: {
-        ...payload.thinking,
-        budget_tokens: Math.max(0, payload.max_tokens - 1),
+        type: "enabled",
+        budget_tokens: clampedBudget,
+      },
+    }
+  }
+
+  // Ensure budget_tokens >= 1024 even if not exceeding max_tokens
+  if (budgetTokens < minBudget) {
+    return {
+      ...payload,
+      thinking: {
+        type: "enabled",
+        budget_tokens: minBudget,
       },
     }
   }

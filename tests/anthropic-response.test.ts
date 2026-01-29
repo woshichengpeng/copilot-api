@@ -20,6 +20,12 @@ const anthropicContentBlockTextSchema = z.object({
   text: z.string(),
 })
 
+const anthropicContentBlockThinkingSchema = z.object({
+  type: z.literal("thinking"),
+  thinking: z.string(),
+  signature: z.string().optional(),
+})
+
 const anthropicContentBlockToolUseSchema = z.object({
   type: z.literal("tool_use"),
   id: z.string(),
@@ -34,6 +40,7 @@ const anthropicMessageResponseSchema = z.object({
   content: z.array(
     z.union([
       anthropicContentBlockTextSchema,
+      anthropicContentBlockThinkingSchema,
       anthropicContentBlockToolUseSchema,
     ]),
   ),
@@ -189,8 +196,89 @@ describe("OpenAI to Anthropic Non-Streaming Response Translation", () => {
     expect(isValidAnthropicResponse(anthropicResponse)).toBe(true)
     expect(anthropicResponse.stop_reason).toBe("max_tokens")
   })
+
+  test("should translate a response with reasoning_text and reasoning_opaque", () => {
+    const openAIResponse: ChatCompletionResponse = {
+      id: "chatcmpl-thinking-123",
+      object: "chat.completion",
+      created: 1677652288,
+      model: "claude-sonnet-4",
+      choices: [
+        {
+          index: 0,
+          message: {
+            role: "assistant",
+            content: "The answer is 4.",
+            reasoning_text: "Let me think step by step: 2 + 2 = 4",
+            reasoning_opaque: "sig_abc123",
+          },
+          finish_reason: "stop",
+          logprobs: null,
+        },
+      ],
+      usage: {
+        prompt_tokens: 15,
+        completion_tokens: 50,
+        total_tokens: 65,
+      },
+    }
+
+    const anthropicResponse = translateToAnthropic(openAIResponse)
+
+    expect(isValidAnthropicResponse(anthropicResponse)).toBe(true)
+    // Thinking block should come first
+    expect(anthropicResponse.content[0].type).toBe("thinking")
+    if (anthropicResponse.content[0].type === "thinking") {
+      expect(anthropicResponse.content[0].thinking).toBe(
+        "Let me think step by step: 2 + 2 = 4",
+      )
+      expect(anthropicResponse.content[0].signature).toBe("sig_abc123")
+    }
+    // Text block should come second
+    expect(anthropicResponse.content[1].type).toBe("text")
+    if (anthropicResponse.content[1].type === "text") {
+      expect(anthropicResponse.content[1].text).toBe("The answer is 4.")
+    }
+  })
+
+  test("should translate a response with only reasoning_opaque (no reasoning_text)", () => {
+    const openAIResponse: ChatCompletionResponse = {
+      id: "chatcmpl-opaque-only",
+      object: "chat.completion",
+      created: 1677652288,
+      model: "claude-sonnet-4",
+      choices: [
+        {
+          index: 0,
+          message: {
+            role: "assistant",
+            content: "Hello!",
+            reasoning_opaque: "sig_opaque_only",
+          },
+          finish_reason: "stop",
+          logprobs: null,
+        },
+      ],
+      usage: {
+        prompt_tokens: 5,
+        completion_tokens: 10,
+        total_tokens: 15,
+      },
+    }
+
+    const anthropicResponse = translateToAnthropic(openAIResponse)
+
+    expect(isValidAnthropicResponse(anthropicResponse)).toBe(true)
+    // Should still create a thinking block with empty thinking text
+    expect(anthropicResponse.content[0].type).toBe("thinking")
+    if (anthropicResponse.content[0].type === "thinking") {
+      expect(anthropicResponse.content[0].thinking).toBe("")
+      expect(anthropicResponse.content[0].signature).toBe("sig_opaque_only")
+    }
+  })
 })
 
+// eslint-disable-next-line max-lines-per-function
 describe("OpenAI to Anthropic Streaming Response Translation", () => {
   test("should translate a simple text stream correctly", () => {
     const openAIStream: Array<ChatCompletionChunk> = [
@@ -251,6 +339,7 @@ describe("OpenAI to Anthropic Streaming Response Translation", () => {
       messageStartSent: false,
       contentBlockIndex: 0,
       contentBlockOpen: false,
+      contentBlockType: null,
       toolCalls: {},
     }
     const translatedStream = openAIStream.flatMap((chunk) =>
@@ -351,6 +440,7 @@ describe("OpenAI to Anthropic Streaming Response Translation", () => {
       messageStartSent: false,
       contentBlockIndex: 0,
       contentBlockOpen: false,
+      contentBlockType: null,
       toolCalls: {},
     }
     const translatedStream = openAIStream.flatMap((chunk) =>
@@ -361,5 +451,119 @@ describe("OpenAI to Anthropic Streaming Response Translation", () => {
     for (const event of translatedStream) {
       expect(isValidAnthropicStreamEvent(event)).toBe(true)
     }
+  })
+
+  test("should translate a stream with reasoning (thinking) before text", () => {
+    const openAIStream: Array<ChatCompletionChunk> = [
+      {
+        id: "cmpl-thinking",
+        object: "chat.completion.chunk",
+        created: 1677652288,
+        model: "claude-sonnet-4",
+        choices: [
+          {
+            index: 0,
+            delta: { role: "assistant" },
+            finish_reason: null,
+            logprobs: null,
+          },
+        ],
+      },
+      {
+        id: "cmpl-thinking",
+        object: "chat.completion.chunk",
+        created: 1677652288,
+        model: "claude-sonnet-4",
+        choices: [
+          {
+            index: 0,
+            delta: { reasoning_text: "Let me think..." },
+            finish_reason: null,
+            logprobs: null,
+          },
+        ],
+      },
+      {
+        id: "cmpl-thinking",
+        object: "chat.completion.chunk",
+        created: 1677652288,
+        model: "claude-sonnet-4",
+        choices: [
+          {
+            index: 0,
+            delta: { reasoning_text: " 2+2=4", reasoning_opaque: "sig_123" },
+            finish_reason: null,
+            logprobs: null,
+          },
+        ],
+      },
+      {
+        id: "cmpl-thinking",
+        object: "chat.completion.chunk",
+        created: 1677652288,
+        model: "claude-sonnet-4",
+        choices: [
+          {
+            index: 0,
+            delta: { content: "The answer is 4." },
+            finish_reason: null,
+            logprobs: null,
+          },
+        ],
+      },
+      {
+        id: "cmpl-thinking",
+        object: "chat.completion.chunk",
+        created: 1677652288,
+        model: "claude-sonnet-4",
+        choices: [
+          { index: 0, delta: {}, finish_reason: "stop", logprobs: null },
+        ],
+      },
+    ]
+
+    const streamState: AnthropicStreamState = {
+      messageStartSent: false,
+      contentBlockIndex: 0,
+      contentBlockOpen: false,
+      contentBlockType: null,
+      toolCalls: {},
+    }
+    const translatedStream = openAIStream.flatMap((chunk) =>
+      translateChunkToAnthropicEvents(chunk, streamState),
+    )
+
+    for (const event of translatedStream) {
+      expect(isValidAnthropicStreamEvent(event)).toBe(true)
+    }
+
+    // Verify thinking block starts before text block
+    const blockStarts = translatedStream.filter(
+      (e) => e.type === "content_block_start",
+    )
+    expect(blockStarts.length).toBe(2)
+    expect(
+      (blockStarts[0] as { content_block: { type: string } }).content_block
+        .type,
+    ).toBe("thinking")
+    expect(
+      (blockStarts[1] as { content_block: { type: string } }).content_block
+        .type,
+    ).toBe("text")
+
+    // Verify thinking_delta and signature_delta events
+    const thinkingDeltas = translatedStream.filter(
+      (e) =>
+        e.type === "content_block_delta"
+        && (e as { delta: { type: string } }).delta.type === "thinking_delta",
+    )
+    expect(thinkingDeltas.length).toBe(2)
+
+    const signatureDeltas = translatedStream.filter(
+      (e) =>
+        e.type === "content_block_delta"
+        && (e as { delta: { type: string } }).delta.type === "signature_delta",
+    )
+    expect(signatureDeltas.length).toBe(1)
   })
 })

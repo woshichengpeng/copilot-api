@@ -29,6 +29,22 @@ import { mapOpenAIStopReasonToAnthropic } from "./utils"
 export function translateToOpenAI(
   payload: AnthropicMessagesPayload,
 ): ChatCompletionsPayload {
+  // Only send thinking_budget for Claude models to avoid 400 errors on other models
+  const isClaudeModel = payload.model.toLowerCase().includes("claude")
+  let thinkingBudget: number | undefined
+  if (isClaudeModel && payload.thinking?.type === "enabled") {
+    // Anthropic API requires budget_tokens >= 1024 and budget_tokens < max_tokens
+    const minBudget = 1024
+    const maxBudget = Math.max(0, payload.max_tokens - 1)
+
+    // If max_tokens is too small to accommodate minimum budget, don't send thinking_budget
+    // (this will likely cause an API error, but that's the correct behavior)
+    if (maxBudget >= minBudget) {
+      const requestedBudget = payload.thinking.budget_tokens
+      thinkingBudget = Math.max(minBudget, Math.min(requestedBudget, maxBudget))
+    }
+  }
+
   return {
     model: translateModelName(payload.model),
     messages: translateAnthropicMessagesToOpenAI(
@@ -43,6 +59,7 @@ export function translateToOpenAI(
     user: payload.metadata?.user_id,
     tools: translateAnthropicToolsToOpenAI(payload.tools),
     tool_choice: translateAnthropicToolChoiceToOpenAI(payload.tool_choice),
+    thinking_budget: thinkingBudget,
   }
 }
 
@@ -278,51 +295,75 @@ function translateAnthropicToolChoiceToOpenAI(
 
 // Response translation
 
+interface ProcessedBlocks {
+  thinkingBlocks: Array<AnthropicThinkingBlock>
+  textBlocks: Array<AnthropicTextBlock>
+  toolUseBlocks: Array<AnthropicToolUseBlock>
+}
+
+function processChoiceBlocks(
+  choice: ChatCompletionResponse["choices"][0],
+): ProcessedBlocks {
+  const msg = choice.message
+  const thinkingBlocks: Array<AnthropicThinkingBlock> = []
+
+  if (msg.reasoning_text || msg.reasoning_opaque) {
+    thinkingBlocks.push({
+      type: "thinking",
+      thinking: msg.reasoning_text ?? "",
+      ...(msg.reasoning_opaque && { signature: msg.reasoning_opaque }),
+    })
+  }
+
+  return {
+    thinkingBlocks,
+    textBlocks: getAnthropicTextBlocks(msg.content),
+    toolUseBlocks: getAnthropicToolUseBlocks(msg.tool_calls),
+  }
+}
+
+function buildAnthropicUsage(usage: ChatCompletionResponse["usage"]) {
+  return {
+    input_tokens:
+      (usage?.prompt_tokens ?? 0)
+      - (usage?.prompt_tokens_details?.cached_tokens ?? 0),
+    output_tokens: usage?.completion_tokens ?? 0,
+    ...(usage?.prompt_tokens_details?.cached_tokens !== undefined && {
+      cache_read_input_tokens: usage.prompt_tokens_details.cached_tokens,
+    }),
+  }
+}
+
 export function translateToAnthropic(
   response: ChatCompletionResponse,
 ): AnthropicResponse {
-  // Merge content from all choices
+  const allThinkingBlocks: Array<AnthropicThinkingBlock> = []
   const allTextBlocks: Array<AnthropicTextBlock> = []
   const allToolUseBlocks: Array<AnthropicToolUseBlock> = []
   let stopReason: "stop" | "length" | "tool_calls" | "content_filter" | null =
-    null // default
-  stopReason = response.choices[0]?.finish_reason ?? stopReason
+    response.choices[0]?.finish_reason ?? null
 
-  // Process all choices to extract text and tool use blocks
   for (const choice of response.choices) {
-    const textBlocks = getAnthropicTextBlocks(choice.message.content)
-    const toolUseBlocks = getAnthropicToolUseBlocks(choice.message.tool_calls)
-
+    const { thinkingBlocks, textBlocks, toolUseBlocks } =
+      processChoiceBlocks(choice)
+    allThinkingBlocks.push(...thinkingBlocks)
     allTextBlocks.push(...textBlocks)
     allToolUseBlocks.push(...toolUseBlocks)
 
-    // Use the finish_reason from the first choice, or prioritize tool_calls
     if (choice.finish_reason === "tool_calls" || stopReason === "stop") {
       stopReason = choice.finish_reason
     }
   }
-
-  // Note: GitHub Copilot doesn't generate thinking blocks, so we don't include them in responses
 
   return {
     id: response.id,
     type: "message",
     role: "assistant",
     model: response.model,
-    content: [...allTextBlocks, ...allToolUseBlocks],
+    content: [...allThinkingBlocks, ...allTextBlocks, ...allToolUseBlocks],
     stop_reason: mapOpenAIStopReasonToAnthropic(stopReason),
     stop_sequence: null,
-    usage: {
-      input_tokens:
-        (response.usage?.prompt_tokens ?? 0)
-        - (response.usage?.prompt_tokens_details?.cached_tokens ?? 0),
-      output_tokens: response.usage?.completion_tokens ?? 0,
-      ...(response.usage?.prompt_tokens_details?.cached_tokens
-        !== undefined && {
-        cache_read_input_tokens:
-          response.usage.prompt_tokens_details.cached_tokens,
-      }),
-    },
+    usage: buildAnthropicUsage(response.usage),
   }
 }
 

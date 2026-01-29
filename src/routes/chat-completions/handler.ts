@@ -18,6 +18,12 @@ export async function handleCompletion(c: Context) {
   await checkRateLimit(state)
 
   let payload = await c.req.json<ChatCompletionsPayload>()
+  const payloadRecord = payload as unknown as Record<string, unknown>
+  const thinkingEnabled =
+    payloadRecord.thinking !== undefined
+    || payloadRecord.reasoning !== undefined
+  c.set("model", payload.model)
+  c.set("thinking", thinkingEnabled ? "enabled" : "disabled")
   consola.debug("Request payload:", JSON.stringify(payload).slice(-400))
 
   // Find the selected model

@@ -1,6 +1,5 @@
 import { Hono } from "hono"
 import { cors } from "hono/cors"
-import { logger } from "hono/logger"
 
 import { completionRoutes } from "./routes/chat-completions/route"
 import { embeddingRoutes } from "./routes/embeddings/route"
@@ -11,10 +10,49 @@ import { responseRoutes } from "./routes/responses/route"
 import { tokenRoute } from "./routes/token/route"
 import { usageRoute } from "./routes/usage/route"
 
-export const server = new Hono()
+type Variables = {
+  model?: string
+  thinking?: string
+}
 
-server.use(logger())
+export const server = new Hono<{ Variables: Variables }>()
+
 server.use(cors())
+
+server.use(async (c, next) => {
+  const start = Date.now()
+  try {
+    await next()
+  } finally {
+    const durationMs = Date.now() - start
+    const duration =
+      durationMs >= 1000 ?
+        `${(durationMs / 1000).toFixed(1)}s`
+      : `${durationMs}ms`
+    const model = c.get("model")
+    const thinking = c.get("thinking")
+    const extra = [
+      model && `model=${model}`,
+      thinking && `thinking=${thinking}`,
+    ]
+      .filter(Boolean)
+      .join(" ")
+    const timestamp = new Date().toLocaleTimeString()
+    const line = [
+      "-->",
+      c.req.method,
+      c.req.path,
+      c.res.status,
+      duration,
+      extra,
+      `[${timestamp}]`,
+    ]
+      .filter(Boolean)
+      .join(" ")
+
+    console.log(line)
+  }
+})
 
 server.get("/", (c) => c.text("Server running"))
 

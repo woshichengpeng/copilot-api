@@ -227,6 +227,25 @@ describe("Anthropic to OpenAI translation logic", () => {
     const anthropicPayload: AnthropicMessagesPayload = {
       model: "claude-3-5-sonnet-20241022",
       messages: [{ role: "user", content: "Hello!" }],
+      max_tokens: 2000,
+      thinking: {
+        type: "enabled",
+        budget_tokens: 3000,
+      },
+    }
+
+    const normalized = normalizeAnthropicThinking(anthropicPayload)
+    // budget_tokens should be clamped to max_tokens - 1 = 1999
+    expect(normalized.thinking?.type).toBe("enabled")
+    if (normalized.thinking?.type === "enabled") {
+      expect(normalized.thinking.budget_tokens).toBe(1999)
+    }
+  })
+
+  test("should disable thinking when max_tokens too small for minimum budget", () => {
+    const anthropicPayload: AnthropicMessagesPayload = {
+      model: "claude-3-5-sonnet-20241022",
+      messages: [{ role: "user", content: "Hello!" }],
       max_tokens: 64,
       thinking: {
         type: "enabled",
@@ -235,7 +254,27 @@ describe("Anthropic to OpenAI translation logic", () => {
     }
 
     const normalized = normalizeAnthropicThinking(anthropicPayload)
-    expect(normalized.thinking?.budget_tokens).toBe(63)
+    // max_tokens (64) <= minBudget (1024), so thinking should be disabled
+    expect(normalized.thinking).toBeUndefined()
+  })
+
+  test("should enforce minimum budget_tokens of 1024", () => {
+    const anthropicPayload: AnthropicMessagesPayload = {
+      model: "claude-3-5-sonnet-20241022",
+      messages: [{ role: "user", content: "Hello!" }],
+      max_tokens: 4000,
+      thinking: {
+        type: "enabled",
+        budget_tokens: 500,
+      },
+    }
+
+    const normalized = normalizeAnthropicThinking(anthropicPayload)
+    // budget_tokens should be raised to minimum 1024
+    expect(normalized.thinking?.type).toBe("enabled")
+    if (normalized.thinking?.type === "enabled") {
+      expect(normalized.thinking.budget_tokens).toBe(1024)
+    }
   })
 })
 

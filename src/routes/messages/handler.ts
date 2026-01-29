@@ -46,6 +46,9 @@ export async function handleCompletion(c: Context) {
   await checkRateLimit(state)
 
   const anthropicPayload = await c.req.json<AnthropicMessagesPayload>()
+  const thinkingEnabled = anthropicPayload.thinking?.type === "enabled"
+  c.set("model", anthropicPayload.model)
+  c.set("thinking", thinkingEnabled ? "enabled" : "disabled")
   const sanitizedPayload = normalizeAnthropicThinking({
     ...anthropicPayload,
     system: sanitizeAnthropicSystem(anthropicPayload.system),
@@ -62,7 +65,20 @@ export async function handleCompletion(c: Context) {
       "Using native Messages API for model:",
       sanitizedPayload.model,
     )
-    return handleNativeMessagesApi(c, sanitizedPayload)
+    // Get anthropic-beta header from original request to pass through
+    const anthropicBeta = c.req.header("anthropic-beta")
+    // Get all request headers for debugging (exclude sensitive ones)
+    const rawHeaders = Object.fromEntries(
+      Object.entries(c.req.header()).filter(
+        ([key]) =>
+          !["authorization", "cookie", "x-api-key"].includes(key.toLowerCase()),
+      ),
+    )
+    return handleNativeMessagesApi(c, sanitizedPayload, {
+      anthropicBeta,
+      originalPayload: anthropicPayload,
+      originalHeaders: rawHeaders,
+    })
   }
 
   // For other models, translate to Chat Completions API
@@ -93,6 +109,7 @@ export async function handleCompletion(c: Context) {
       messageStartSent: false,
       contentBlockIndex: 0,
       contentBlockOpen: false,
+      contentBlockType: null,
       toolCalls: {},
     }
 
@@ -128,6 +145,12 @@ const isNonStreamingMessagesApi = (
   response: Awaited<ReturnType<typeof createMessages>>,
 ): response is AnthropicResponse => Object.hasOwn(response, "content")
 
+interface NativeMessagesApiOptions {
+  anthropicBeta?: string
+  originalPayload?: unknown
+  originalHeaders?: Record<string, string>
+}
+
 /**
  * Handle native Messages API passthrough for Claude models
  * Directly forwards request to Copilot /v1/messages endpoint
@@ -135,8 +158,9 @@ const isNonStreamingMessagesApi = (
 async function handleNativeMessagesApi(
   c: Context,
   payload: AnthropicMessagesPayload,
+  options: NativeMessagesApiOptions = {},
 ) {
-  const response = await createMessages(payload)
+  const response = await createMessages(payload, options)
 
   // Non-streaming response - return directly
   if (isNonStreamingMessagesApi(response)) {
